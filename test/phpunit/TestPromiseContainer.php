@@ -3,7 +3,6 @@ namespace Gt\Promise\Test;
 
 use Gt\Promise\PromiseInterface;
 use Gt\Promise\PromiseState;
-use Http\Promise\Promise as HttpPromiseInterface;
 
 class TestPromiseContainer {
 	private PromiseInterface $promise;

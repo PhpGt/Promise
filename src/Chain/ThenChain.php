@@ -1,4 +1,5 @@
 <?php
 namespace Gt\Promise\Chain;
 
-class ThenChain extends Chainable {}
+class ThenChain extends Chainable {
+}

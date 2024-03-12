@@ -1,6 +1,7 @@
 <?php
 namespace Gt\Promise\Test;
 
+use ArithmeticError;
 use DateTime;
 use Exception;
 use Gt\Promise\Deferred;
@@ -16,6 +17,7 @@ use RangeException;
 use RuntimeException;
 use stdClass;
 use Throwable;
+use ValueError;
 
 class PromiseTest extends TestCase {
 	public function testOnFulfilledResolvesCorrectValue() {
@@ -34,7 +36,9 @@ class PromiseTest extends TestCase {
 		$promiseContainer = $this->getTestPromiseContainer();
 		$sut = $promiseContainer->getPromise();
 
-		$sut->then(function() {})->then(
+		$sut->then(function(string $message) {
+			return $message;
+		})->then(
 			self::mockCallable(1, $value)
 		);
 
@@ -48,12 +52,12 @@ class PromiseTest extends TestCase {
 		$promiseContainer = $this->getTestPromiseContainer();
 		$sut = $promiseContainer->getPromise();
 		$onResolvedCallCount = 0;
-		$sut->then(function($value) use(&$onResolvedCallCount) {
+		$sut->then(function($value) use (&$onResolvedCallCount) {
 			$onResolvedCallCount++;
 		})
-		->catch(function(PromiseException $reason) use(&$actualMessage) {
-			$actualMessage = $reason->getMessage();
-		});
+			->catch(function(PromiseException $reason) use (&$actualMessage) {
+				$actualMessage = $reason->getMessage();
+			});
 
 		$promiseContainer->resolve($sut);
 		self::assertEquals(0, $onResolvedCallCount);
@@ -67,9 +71,9 @@ class PromiseTest extends TestCase {
 
 		$fulfilledCallCount = 0;
 
-		$sut->then(function() use(&$fulfilledCallCount) {
-				$fulfilledCallCount++;
-			})
+		$sut->then(function() use (&$fulfilledCallCount) {
+			$fulfilledCallCount++;
+		})
 			->catch(self::mockCallable(1, $exception));
 
 		$promiseContainer->reject($exception);
@@ -92,7 +96,7 @@ class PromiseTest extends TestCase {
 
 		$sut = $promiseContainer->getPromise();
 		$sut->then(
-			function() use($exception) {
+			function() use ($exception) {
 				throw $exception;
 			},
 			self::mockCallable(0),
@@ -111,11 +115,11 @@ class PromiseTest extends TestCase {
 
 		$sut = $promiseContainer->getPromise();
 		$sut->then(self::mockCallable(0))
-			->catch(function(Throwable $reason) use($exception) {
+			->catch(function(Throwable $reason) use ($exception) {
 				throw $exception;
 			})
 			->then(self::mockCallable(0))
-			->catch(function(Throwable $reason) use(&$caughtExceptions) {
+			->catch(function(Throwable $reason) use (&$caughtExceptions) {
 				array_push($caughtExceptions, $reason);
 			});
 
@@ -156,14 +160,25 @@ class PromiseTest extends TestCase {
 
 		$promiseContainer = $this->getTestPromiseContainer();
 
-		$onFulfilled = self::mockCallable(2, $message);
-		$onRejected = self::mockCallable(0);
+		$caughtResolutions = [];
+		$caughtReasons = [];
 
 		$sut = $promiseContainer->getPromise();
-		$sut->then($onFulfilled)->catch($onRejected)
-			->then($onFulfilled)->catch($onRejected);
+		$sut->then(function(string $resolved) use (&$caughtResolutions) {
+			array_push($caughtResolutions, $resolved);
+			return $resolved;
+		})->catch(function(Throwable $reason) use (&$caughtReasons) {
+			array_push($caughtReasons, $reason);
+		})->then(function(string $resolved) use (&$caughtResolutions) {
+			array_push($caughtResolutions, $resolved);
+			return $resolved;
+		})->catch(function(Throwable $reason) use (&$caughtReasons) {
+			array_push($caughtReasons, $reason);
+		});
 
 		$promiseContainer->resolve($message);
+		self::assertCount(2, $caughtResolutions);
+		self::assertEmpty($caughtReasons);
 	}
 
 	public function testThenCallbackResultForwarded() {
@@ -180,16 +195,54 @@ class PromiseTest extends TestCase {
 		);
 		$onRejected = self::mockCallable(0);
 
-		$sut->then(function(string $message) use($messageConcat) {
+		$sut->then(function(string $message) use ($messageConcat) {
 			return "$message, $messageConcat";
 		})
 			->then(function(string $message) {
-			return "$message!!!";
-		})
+				return "$message!!!";
+			})
 			->then($onFulfilled)
 			->catch($onRejected);
 
 		$promiseContainer->resolve($message);
+	}
+
+	public function testThenCallbackResultStoppedWhenNullReturn() {
+		$concatMessages1 = "";
+		$promiseContainer = $this->getTestPromiseContainer();
+		$sut = $promiseContainer->getPromise();
+		$sut->then(function(string $message) use (&$concatMessages1) {
+			$concatMessages1 .= $message;
+
+			if($message === "STOP") {
+				return null;
+			}
+
+			return "MORE";
+		})->then(function(string $message) use (&$concatMessages1) {
+			$concatMessages1 .= $message;
+		});
+
+		$promiseContainer->resolve("HELLO");
+		self::assertEquals("HELLOMORE", $concatMessages1);
+
+		$concatMessages2 = "";
+		$promiseContainer = $this->getTestPromiseContainer();
+		$sut = $promiseContainer->getPromise();
+		$sut->then(function(string $message) use (&$concatMessages2) {
+			$concatMessages2 .= $message;
+
+			if($message === "STOP") {
+				return null;
+			}
+
+			return "MORE";
+		})->then(function(string $message) use (&$concatMessages2) {
+			$concatMessages2 .= $message;
+		});
+
+		$promiseContainer->resolve("STOP");
+		self::assertEquals("STOP", $concatMessages2);
 	}
 
 	/**
@@ -204,16 +257,16 @@ class PromiseTest extends TestCase {
 		$fulfilledCallCount = 0;
 
 		$sut = $promiseContainer->getPromise();
-		$sut->then(function($value) use(&$fulfilledCallCount) {
-				$fulfilledCallCount++;
-			})
-		->then(function($value) use(&$fulfilledCallCount) {
+		$sut->then(function($value) use (&$fulfilledCallCount) {
 			$fulfilledCallCount++;
 		})
-		->then(function($value) use(&$fulfilledCallCount) {
+			->then(function($value) use (&$fulfilledCallCount) {
 				$fulfilledCallCount++;
 			})
-		->catch(self::mockCallable(1, $expectedException));
+			->then(function($value) use (&$fulfilledCallCount) {
+				$fulfilledCallCount++;
+			})
+			->catch(self::mockCallable(1, $expectedException));
 
 		$promiseContainer->reject($expectedException);
 		self::assertEquals(0, $fulfilledCallCount);
@@ -259,7 +312,7 @@ class PromiseTest extends TestCase {
 		$onRejected = self::mockCallable(1, $exception);
 
 		$sut = $promiseContainer->getPromise();
-		$sut->catch(function($reason) use($onRejected) {
+		$sut->catch(function($reason) use ($onRejected) {
 			call_user_func($onRejected, $reason);
 		});
 		$promiseContainer->reject($exception);
@@ -272,7 +325,7 @@ class PromiseTest extends TestCase {
 
 		$onRejected = self::mockCallable(1, $exception);
 
-		$sut->catch(function(PromiseException $reason) use($onRejected) {
+		$sut->catch(function(PromiseException $reason) use ($onRejected) {
 			call_user_func($onRejected, $reason);
 		});
 
@@ -288,10 +341,10 @@ class PromiseTest extends TestCase {
 		$expectedReason = new RuntimeException("This is expected");
 		$caughtReasons = [];
 
-		$sut->then(function($value)use ($expectedReason, &$caughtResolutions) {
+		$sut->then(function($value) use ($expectedReason, &$caughtResolutions) {
 			array_push($caughtResolutions, $value);
 			throw $expectedReason;
-		})->catch(function(Throwable $reason)use(&$caughtReasons) {
+		})->catch(function(Throwable $reason) use (&$caughtReasons) {
 			array_push($caughtReasons, $reason);
 		});
 
@@ -315,15 +368,15 @@ class PromiseTest extends TestCase {
 		$expectedReason = new RuntimeException("This is expected");
 		$caughtReasons = [];
 
-		$sut->then(function($value)use ($expectedReason) {
+		$sut->then(function($value) use ($expectedReason) {
 			throw $expectedReason;
-		})->catch(function(Throwable $reason)use($newDeferred) {
+		})->catch(function(Throwable $reason) use ($newDeferred) {
 			$newDeferred->reject($reason);
 		});
 
-		$newPromise->then(function($value)use ($expectedReason, &$caughtResolutions) {
+		$newPromise->then(function($value) use ($expectedReason, &$caughtResolutions) {
 			array_push($caughtResolutions, $value);
-		})->catch(function(Throwable $reason)use (&$caughtReasons) {
+		})->catch(function(Throwable $reason) use (&$caughtReasons) {
 			array_push($caughtReasons, $reason);
 		});
 
@@ -347,7 +400,7 @@ class PromiseTest extends TestCase {
 
 		$sut = $promiseContainer->getPromise();
 		$sut->finally(fn() => "example123")
-		->then(self::mockCallable(1, $expectedValue));
+			->then(self::mockCallable(1, $expectedValue));
 
 		$promiseContainer->resolve($expectedValue);
 	}
@@ -357,7 +410,7 @@ class PromiseTest extends TestCase {
 		$promiseContainer = $this->getTestPromiseContainer();
 		$sut = $promiseContainer->getPromise();
 		$sut->finally(function() {})
-		->catch(self::mockCallable(1, $exception));
+			->catch(self::mockCallable(1, $exception));
 		$promiseContainer->reject($exception);
 	}
 
@@ -380,13 +433,33 @@ class PromiseTest extends TestCase {
 		self::expectException(Exception::class);
 		self::expectExceptionMessage("Second");
 		$sut = $promiseContainer->getPromise();
-		$sut->finally(function(mixed $resolvedValueOrRejectedReason) use($exception1) {
+		$sut->finally(function(mixed $resolvedValueOrRejectedReason) use ($exception1) {
 			self::assertSame($resolvedValueOrRejectedReason, $exception1);
 			throw new Exception("Second");
 		})
-		->then(self::mockCallable(0))
-		->catch(self::mockCallable(1, $exception1));
+			->then(self::mockCallable(0))
+			->catch(self::mockCallable(1, $exception1));
 		$promiseContainer->reject($exception1);
+	}
+
+	public function testFinallyCanReturnPromise() {
+		$finallyLog = [];
+
+		$otherPromiseContainer = $this->getTestPromiseContainer();
+		$otherPromise = $otherPromiseContainer->getPromise();
+
+		$promiseContainer = $this->getTestPromiseContainer();
+		$sut = $promiseContainer->getPromise();
+		$sut->finally(function(mixed $resolvedValueOrRejectedReason) use($otherPromise, &$finallyLog) {
+			array_push($finallyLog, $resolvedValueOrRejectedReason);
+			return $otherPromise;
+		})->finally(function(mixed $resolvedValueOrRejectedReason) use($otherPromise, &$finallyLog) {
+			array_push($finallyLog, $resolvedValueOrRejectedReason);
+		});
+		$promiseContainer->resolve("test");
+		self::assertCount(2, $finallyLog);
+		self::assertSame("test", $finallyLog[0]);
+		self::assertNull($finallyLog[1]);
 	}
 
 	public function testOnRejectedCalledWhenFinallyThrows() {
@@ -396,7 +469,7 @@ class PromiseTest extends TestCase {
 		self::expectException(PromiseException::class);
 		self::expectExceptionMessage("Oh dear, oh dear");
 		$sut = $promiseContainer->getPromise();
-		$sut->finally(function() use($exception) {
+		$sut->finally(function() use ($exception) {
 			throw $exception;
 		})->then(
 			self::mockCallable(1, "Example resolution"),
@@ -428,7 +501,7 @@ class PromiseTest extends TestCase {
 	public function testGetStateRejected() {
 		$promiseContainer = $this->getTestPromiseContainer();
 		$sut = $promiseContainer->getPromise();
-		$sut->catch(function(Throwable $throwable){});
+		$sut->catch(function(Throwable $throwable) {});
 
 		$promiseContainer->reject(new Exception("Example rejection"));
 
@@ -452,12 +525,12 @@ class PromiseTest extends TestCase {
 
 		$exception = null;
 		try {
-			$sut->then(function() use($expectedException) {
+			$sut->then(function() use ($expectedException) {
 				throw $expectedException;
 			})
-			->catch($onRejected);
+				->catch($onRejected);
+		} catch(Throwable $exception) {
 		}
-		catch(Throwable $exception) {}
 
 		$promiseContainer->resolve("test");
 		self::assertNull($exception);
@@ -472,15 +545,15 @@ class PromiseTest extends TestCase {
 		$expectedException = new Exception("Test exception");
 		$promiseContainer = $this->getTestPromiseContainer();
 		$sut = $promiseContainer->getPromise();
-		$sut->then(function() use($expectedException) {
+		$sut->then(function() use ($expectedException) {
 			throw $expectedException;
 		});
 
 		$exception = null;
 		try {
 			$promiseContainer->resolve("test");
+		} catch(Throwable $exception) {
 		}
-		catch(Throwable $exception) {}
 
 		self::assertSame($expectedException, $exception);
 	}
@@ -492,18 +565,41 @@ class PromiseTest extends TestCase {
 
 		$exception = null;
 		try {
-			$sut->then(function(string $message) use($sut, $promiseContainer, $expectedException) {
-				$sut->then(function($resolvedValue) use($promiseContainer, $expectedException) {
+			$sut->then(function(string $message) use ($sut, $promiseContainer, $expectedException) {
+				$sut->then(function($resolvedValue) use ($promiseContainer, $expectedException) {
 					$promiseContainer->reject($expectedException);
 				});
 				return $sut;
 			});
 
 			$promiseContainer->resolve("test");
+		} catch(Throwable $exception) {
 		}
-		catch(Throwable $exception) {}
 
 		self::assertSame($expectedException, $exception);
+	}
+
+	public function testCatchCanReturnPromise() {
+		$catchLog = [];
+		$finallyLog = [];
+
+		$otherPromiseContainer = $this->getTestPromiseContainer();
+		$otherPromise = $otherPromiseContainer->getPromise();
+		$otherPromiseContainer->resolve("test");
+
+		$promiseContainer = $this->getTestPromiseContainer();
+		$sut = $promiseContainer->getPromise();
+		$sut->catch(function(Throwable $rejectedReason) use($otherPromise, &$catchLog) {
+			array_push($catchLog, $rejectedReason);
+			return $otherPromise;
+		})->finally(function(mixed $received) use(&$finallyLog) {
+			array_push($finallyLog, $received);
+		});
+		$promiseContainer->resolve($sut);
+		self::assertCount(1, $catchLog);
+		self::assertCount(1, $finallyLog);
+		self::assertInstanceOf(PromiseResolvedWithAnotherPromiseException::class, $catchLog[0]);
+		self::assertSame("test", $finallyLog[0]);
 	}
 
 	public function testFulfilledReturnsNewPromiseThatIsResolved() {
@@ -514,18 +610,24 @@ class PromiseTest extends TestCase {
 		$messagePromise = $messagePromiseContainer->getPromise();
 
 		$numberToResolveWith = null;
+		$actualMessageReceived = null;
 
 // The first onFulfilled takes the number to process, and returns a new promise
 // which should resolve to a message containing the number.
 		$numberPromise
-		->then(function(int $number) use($messagePromiseContainer, $messagePromise, &$numberToResolveWith) {
-			$numberToResolveWith = $number;
-			return $messagePromise;
-		})
-		->then(self::mockCallable(1, "Your number is 105"));
+			->then(function(int $number) use ($messagePromiseContainer, $messagePromise, &$numberToResolveWith) {
+				$numberToResolveWith = $number;
+				return $messagePromise;
+			})
+			->then(
+				function(string $message) use(&$actualMessageReceived) {
+					$actualMessageReceived = $message;
+				}
+			);
 
 		$numberPromiseContainer->resolve(105);
 		$messagePromiseContainer->resolve("Your number is $numberToResolveWith");
+		self::assertEquals("Your number is 105", $actualMessageReceived);
 	}
 
 	/**
@@ -558,24 +660,24 @@ class PromiseTest extends TestCase {
 		$innerComplete = null;
 		$innerPromise = null;
 
-		$sut = new Promise(function($f, $r, $c) use(&$fulfill, &$reject, &$complete) {
+		$sut = new Promise(function($f, $r, $c) use (&$fulfill, &$reject, &$complete) {
 			$fulfill = $f;
 			$reject = $r;
 			$complete = $c;
 		});
 
 // Define asynchronous behaviour:
-		$sut->then(function(string $name) use(&$innerFulfil, &$innerReject, &$innerComplete, &$innerPromise, &$searchTerm, &$receivedNames) {
+		$sut->then(function(string $name) use (&$innerFulfil, &$innerReject, &$innerComplete, &$innerPromise, &$searchTerm, &$receivedNames) {
 			array_push($receivedNames, $name);
 			$searchTerm = $name;
 
-			$innerPromise = new Promise(function($f, $r, $c) use(&$innerFulfil, &$innerReject, &$innerComplete) {
+			$innerPromise = new Promise(function($f, $r, $c) use (&$innerFulfil, &$innerReject, &$innerComplete) {
 				$innerFulfil = $f;
 				$innerReject = $r;
 				$innerComplete = $c;
 			});
 			return $innerPromise;
-		})->then(function(string $address) use(&$receivedAddresses) {
+		})->then(function(string $address) use (&$receivedAddresses) {
 			array_push($receivedAddresses, $address);
 		});
 
@@ -607,18 +709,18 @@ class PromiseTest extends TestCase {
 		$newPromise = new CustomPromise();
 		$deferred = new Deferred();
 		$deferredPromise = $deferred->getPromise();
-		$deferredPromise->then(function($resolvedValue)use($newPromise) {
+		$deferredPromise->then(function($resolvedValue) use ($newPromise) {
 			$newPromise->resolve($resolvedValue);
-		}, function($rejectedValue)use($newPromise) {
+		}, function($rejectedValue) use ($newPromise) {
 			$newPromise->reject($rejectedValue);
 		});
 
 		$resolution = null;
 		$rejection = null;
 
-		$newPromise->then(function($resolvedValue)use(&$resolution) {
+		$newPromise->then(function($resolvedValue) use (&$resolution) {
 			$resolution = $resolvedValue;
-		}, function($rejectedValue)use(&$rejection) {
+		}, function($rejectedValue) use (&$rejection) {
 			$rejection = $rejectedValue;
 		});
 
@@ -635,18 +737,18 @@ class PromiseTest extends TestCase {
 
 		$deferred = new Deferred();
 		$deferredPromise = $deferred->getPromise();
-		$deferredPromise->then(function($resolvedValue)use($customPromise) {
+		$deferredPromise->then(function($resolvedValue) use ($customPromise) {
 			$customPromise->resolve($resolvedValue);
-		})->catch(function($rejectedValue)use($customPromise) {
+		})->catch(function($rejectedValue) use ($customPromise) {
 			$customPromise->reject($rejectedValue);
 		});
 
 		$resolution = null;
 		$rejection = null;
 
-		$customPromise->then(function($resolvedValue)use(&$resolution) {
+		$customPromise->then(function($resolvedValue) use (&$resolution) {
 			$resolution = $resolvedValue;
-		})->catch(function($rejectedValue)use(&$rejection) {
+		})->catch(function($rejectedValue) use (&$rejection) {
 			$rejection = $rejectedValue;
 		});
 
@@ -665,9 +767,9 @@ class PromiseTest extends TestCase {
 
 		$deferred = new Deferred();
 		$deferredPromise = $deferred->getPromise();
-		$deferredPromise->then(function($resolvedValue)use(&$thenCalls) {
+		$deferredPromise->then(function($resolvedValue) use (&$thenCalls) {
 			array_push($thenCalls, $resolvedValue);
-		})->catch(function(Throwable $reason)use(&$catchCalls) {
+		})->catch(function(Throwable $reason) use (&$catchCalls) {
 			array_push($catchCalls, $reason);
 		});
 
@@ -675,11 +777,11 @@ class PromiseTest extends TestCase {
 		$innerPromise = $innerDeferred->getPromise();
 
 		$rejection = new Exception("test rejection");
-		$innerPromise->then(function(string $message)use($rejection) {
+		$innerPromise->then(function(string $message) use ($rejection) {
 			if(!$message) {
 				throw $rejection;
 			}
-		})->catch(function(Throwable $reason)use($deferred) {
+		})->catch(function(Throwable $reason) use ($deferred) {
 			$deferred->reject($reason);
 		});
 
@@ -699,7 +801,7 @@ class PromiseTest extends TestCase {
 			if($message === "error") {
 				throw $expectedException;
 			}
-		})->catch(function(Throwable $reason) use(&$caughtReasons) {
+		})->catch(function(Throwable $reason) use (&$caughtReasons) {
 			array_push($caughtReasons, $reason);
 		});
 
@@ -713,7 +815,7 @@ class PromiseTest extends TestCase {
 
 		$deferred = new Deferred();
 		$deferredPromise = $deferred->getPromise();
-		$deferredPromise->then(function(string $message) use($expectedException) {
+		$deferredPromise->then(function(string $message) use ($expectedException) {
 			if($message === "error") {
 				throw $expectedException;
 			}
@@ -724,13 +826,33 @@ class PromiseTest extends TestCase {
 		$deferred->resolve("error");
 	}
 
+	public function testPromise_catchMethodCorrectType():void {
+		$deferred = new Deferred();
+		$promise = $deferred->getPromise();
+		$resolvedValue = null;
+		$rejectedReason = null;
+
+		$promise->then(function(string $value) use(&$resolvedValue) {
+			$resolvedValue = $value;
+		})->catch(function(ValueError $valueError) use(&$rejectedReason) {
+			$rejectedReason = $valueError;
+		})->catch(function(ArithmeticError $arithmeticError) use(&$rejectedReason) {
+			$rejectedReason = $arithmeticError;
+		});
+
+		$triggeredError = new ArithmeticError("something bad happened");
+		$deferred->reject($triggeredError);
+		self::assertNull($resolvedValue);
+		self::assertSame($triggeredError, $rejectedReason);
+	}
+
 	protected function getTestPromiseContainer():TestPromiseContainer {
 		$resolveCallback = null;
 		$rejectCallback = null;
 		$completeCallback = null;
 
 		$promise = new Promise(function($resolve, $reject, $complete)
-		use(&$resolveCallback, &$rejectCallback, &$completeCallback) {
+		use (&$resolveCallback, &$rejectCallback, &$completeCallback) {
 			$resolveCallback = $resolve;
 			$rejectCallback = $reject;
 			$completeCallback = $complete;
